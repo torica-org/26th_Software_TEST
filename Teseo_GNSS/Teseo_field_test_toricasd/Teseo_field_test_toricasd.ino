@@ -1,19 +1,14 @@
 #include <TinyGPSPlus.h>
 TinyGPSPlus gps;
-#include <SPI.h>
-#include <SD.h>
+// #include <SPI.h>
+// #include <SD.h>
 
-
-
+#include <FS.h>
 #include <TORICA_SD.h>
-TORICA_SD mySD;
+TORICA_SD mySD(D2);
 
-
-
-File myFile;
 const int chipSelect = D2;
 bool SD_active = false;
-char fileName[32];
 char SD_BUF[512];
 
 TinyGPSCustom fixQualityGP(gps, "GPGGA", 6);
@@ -45,39 +40,15 @@ void setup() {
   // SPI.setSCK(D8); // SCK
   // SPI.setTX(D10); // MOSI
   // SPI.setRX(D9); //MISO
+
   SPI.begin(D8, D9, D10, D2);  // SCK, MISO, MOSI, CS
-
-  // mySD.begin(D2); //CSをD2に設定 for TORICA_SD
-  Serial.println("Initializing SD card...");
-
-  // SD.h使用
-  if (!SD.begin(chipSelect)) {
-    Serial.println("SD.begin failed");
+  // SPI.begin();
+ // mySD.begin(D2);  //CSをD2に設定 // for TORICA_SD
+  if (!mySD.begin(D2)){
+    Serial.println("mySD.begin failed");
   } else {
-    Serial.println("SD.begin() success");
-
-    // 新しいCSVファイルを作成
-    for (int i = 0; i < 1000; i++) {
-      sprintf(fileName, "/LOG%03d.csv", i);  // LOG000.csv, LOG001.csv ...
-      if (!SD.exists(fileName)) {
-        // もしその名前のファイルが存在しなければ、それが新しいファイル名に決定！
-        break;
-      }
-      Serial.print("New file name: ");
-      Serial.println(fileName);
-    }
-
-    myFile = SD.open(fileName, FILE_WRITE);
-    if (!myFile) {
-      Serial.println("Create LOG.csv failed.");
-    } else {
-      Serial.println("Created LOG.csv");
-      myFile.print("time,lat,lon,fix_quality,satellites\n");  // ヘッダーを書き込み
-    }
-    myFile.close();
-    Serial.println("SD init done.");
+    Serial.println("mySD.begin() success");
   }
-
 
   Serial1.begin(921600, SERIAL_8N1, D7, D6);
   delay(100);
@@ -118,21 +89,11 @@ void loop() {
     groundspeed = gps.speed.kmph() * 1000 / 3600;
     satellites = gps.satellites.value();
 
-    SD_active = false;
     // SD書き込み
     memset(SD_BUF, 0, sizeof(SD_BUF));  // バッファクリア
     sprintf(SD_BUF, "%02u:%02u:%02u:%03u,%.7f,%.7f,%.2f,%u,%u\n", hour, minute, second, centisecond, latitude, longitude, groundspeed, fix_quality, satellites);
-    // mySD.add_str(SD_BUF);
-    // mySD.flash();
-    myFile = SD.open(fileName, FILE_APPEND);
-    if (myFile) {
-      myFile.print(SD_BUF);
-      myFile.close();
-      Serial.println("LOG ADDED");
-      SD_active = true;
-    } else {
-      SD_active = false;
-    }
+    mySD.add_str(SD_BUF);
+    mySD.flash();
 
     if (loop_count == 10 /* 10秒に一回更新 */) {
       // デバッグ表示

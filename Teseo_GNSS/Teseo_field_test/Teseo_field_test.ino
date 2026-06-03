@@ -1,14 +1,14 @@
 #include <TinyGPSPlus.h>
 TinyGPSPlus gps;
 #include <SPI.h>
-#include <SD.h>
 
-/*
-#include <TORICA_SD.h>
-TORICA_SD mySD;
-*/
+#include <SdFat.h>
+SdFs sd_fat;  // 名前をSDからsd_fatに変更して衝突を回避
+FsFile myFile;
 
-File myFile;
+#define SDFAT_FILE_WRITE (O_RDWR | O_CREAT | O_AT_END)
+#define SDFAT_FILE_APPEND (O_RDWR | O_APPEND)
+
 const int chipSelect = D2;
 bool SD_active = false;
 char fileName[32];
@@ -32,71 +32,62 @@ volatile double longitude = 0;
 volatile double altitude = 0;
 volatile double groundspeed = 0;
 volatile uint8_t satellites = 0;
-volatile uint8_t fix_quality = 0;  // ★追加: Fix Quality保存用変数
+volatile uint8_t fix_quality = 0;
 
 void setup() {
   Serial.begin(921600);
   Serial1.setRxBufferSize(8192);
 
-  // SDピン設定
-  // SPI.setCS(D2); // CS
-  // SPI.setSCK(D8); // SCK
-  // SPI.setTX(D10); // MOSI
-  // SPI.setRX(D9); //MISO
+  // SPI初期化
   SPI.begin(D8, D9, D10, D2);  // SCK, MISO, MOSI, CS
 
-  // mySD.begin(D2); //CSをD2に設定 for TORICA_SD
   Serial.println("Initializing SD card...");
 
-  // SD.h使用
-  if (!SD.begin(chipSelect)) {
-    Serial.println("SD.begin failed");
+  // SdFatの初期化 (exFAT対応)
+  // クロックを16MHzに制限して安定性を向上
+  if (!sd_fat.begin(SdSpiConfig(chipSelect, SHARED_SPI, SD_SCK_MHZ(16)))) {
+    Serial.println("SD.begin failed! (Check format or wiring)");
   } else {
     Serial.println("SD.begin() success");
 
     // 新しいCSVファイルを作成
     for (int i = 0; i < 1000; i++) {
-      sprintf(fileName, "/LOG%03d.csv", i);  // LOG000.csv, LOG001.csv ...
-      if (!SD.exists(fileName)) {
-        // もしその名前のファイルが存在しなければ、それが新しいファイル名に決定！
+      sprintf(fileName, "/LOG%03d.csv", i);
+      if (!sd_fat.exists(fileName)) {
         break;
       }
-      Serial.print("New file name: ");
-      Serial.println(fileName);
     }
+    Serial.print("New file name: ");
+    Serial.println(fileName);
 
-    myFile = SD.open(fileName, FILE_WRITE);
+    // ヘッダー書き込み (SDFAT_FILE_WRITEを使用)
+    myFile = sd_fat.open(fileName, SDFAT_FILE_WRITE);
     if (!myFile) {
       Serial.println("Create LOG.csv failed.");
     } else {
       Serial.println("Created LOG.csv");
-      myFile.print("time,lat,lon,fix_quality,satellites\n");  // ヘッダーを書き込み
+      myFile.print("time,lat,lon,groundspeed,fix_quality,satellites\n");
+      myFile.close();
+      Serial.println("SD init done.");
     }
-    myFile.close();
-    Serial.println("SD init done.");
   }
-
 
   Serial1.begin(921600, SERIAL_8N1, D7, D6);
   delay(100);
   SerialWeb.begin(SSID, PASSWORD);
-
-  delay(1000);  // GPSレシーバの起動を待機
+  delay(1000);
 
   Serial.println("GNSS Initialization Complete");
 }
 
-
 uint8_t loop_count = 0;
 
 void loop() {
-  // GNSSからのデータ読み込みとパース
   while (Serial1.available() > 0) {
     char c = Serial1.read();
     gps.encode(c);
   }
 
-  // 100msに1回の画面表示とWeb送信処理
   if (millis() - lastDisplayTime > 100) {
     lastDisplayTime = millis();
 
@@ -117,29 +108,26 @@ void loop() {
     satellites = gps.satellites.value();
 
     SD_active = false;
-    // SD書き込み
-    memset(SD_BUF, 0, sizeof(SD_BUF));  // バッファクリア
+    memset(SD_BUF, 0, sizeof(SD_BUF));
     sprintf(SD_BUF, "%02u:%02u:%02u:%03u,%.7f,%.7f,%.2f,%u,%u\n", hour, minute, second, centisecond, latitude, longitude, groundspeed, fix_quality, satellites);
-    // mySD.add_str(SD_BUF);
-    // mySD.flash();
-    myFile = SD.open(fileName, FILE_APPEND);
+
+    // 追記モードでオープン (SDFAT_FILE_APPENDを使用)
+    myFile = sd_fat.open(fileName, SDFAT_FILE_APPEND);
     if (myFile) {
       myFile.print(SD_BUF);
       myFile.close();
-      Serial.println("LOG ADDED");
       SD_active = true;
-    } else {
-      SD_active = false;
     }
 
-    if (loop_count == 10 /* 10秒に一回更新 */) {
-      // デバッグ表示
-      loop_count = 0;  //リセット
+    if (loop_count >= 10) {  // 1秒ごとにデバッグ表示
+      loop_count = 0;
 
       char time[16];
       sprintf(time, "%02u:%02u:%02u:%03u", hour, minute, second, centisecond);
       Serial.print("time: ");
       Serial.print(time);
+      Serial.print(" SD: ");
+      Serial.print(SD_active);
 
       Serial.print(" Sat: ");
       Serial.print(satellites);
