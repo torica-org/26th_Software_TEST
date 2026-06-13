@@ -7,19 +7,21 @@ const int SERIAL_TX = 0;
 const int SERIAL_RX = 1;
 
 // SD用SPI
-const int MISO = 4;
-const int MOSI = 7;
-const int CS = 5;
-const int SCK = 6;
+const int SD_MISO = 4;
+const int SD_MOSI = 7;
+const int SD_CS = 5;
+const int SD_SCK = 6;
 
-const String DATA_FILE = "data.csv";
-const int DATA_SIZE = 5; // CSVの列数
+const String DATA_FILE = "data.csv"; // 読み込むログデータ
+const int COLUMN_SIZE = 5; // CSVの列数
+int ROW_SIZE = 0;          // 行カウント用
 
+// 読み込んだ1行分のデータを保持するグローバル配列
+String read_data[COLUMN_SIZE]; 
 
 File myfile;
 
 void setup() {
-  // put your setup code here, to run once:
   // PCとの通信用
   Serial.begin(115200);
 
@@ -27,85 +29,115 @@ void setup() {
   Serial1.setTX(SERIAL_TX);
   Serial1.setRX(SERIAL_RX);
   Serial1.begin(460800); // 各基板との通信速度を設定
-  delay(1000);
+  delay(2000);
 
   Serial.println("Initializing SPI...");
+  delay(1000);
 
   // SPI設定
-  SPI.setRX(MISO);
-  SPI.setTX(MOSI);
-  SPI.setSCK(SCK);
+  SPI.setRX(SD_MISO);
+  SPI.setTX(SD_MOSI);
+  SPI.setSCK(SD_SCK);
 
   // SDカードの接続判定
-  if (SD.begin(CS) == false){
-    // SDカードに接続できなかった場合
+  if (SD.begin(SD_CS) == false){
     Serial.println("SD initialization failed.");
   } else {
     Serial.println("SD initialization done.");
   }
-  
-  // ファイルを読み込みモードでopen
-  myfile = SD.open(DATA_FILE, FILE_READ);
-
 
   // データファイルがあるかどうか確認
   if(SD.exists(DATA_FILE)) {
-    // SDカード内に読み出し対象のデータがある場合
-    Serial.println(DATA_FILE + "exists.");
+    Serial.println(DATA_FILE + " exists.");
   } else {
     Serial.println("Cannot find " + DATA_FILE);
   }
-
 }
 
-
-void readLog(){
-  if (myfile) {
-    Serial.println("reading...");
-    String buffer = ""; // 読み込んだ文字を保存するバッファ
-    float read_data[DATA_SIZE]; // 読み込んだ数値を保存する配列
-    int data_count = 0; // カウンターを初期化
-
-    while (myfile.available() > 0){
-      char c = myfile.read(); // 1文字読み込む
-
-      // ','（カンマ）が来た場合
-      if (c == ','){
-        Serial.println(buffer);
-        read_data[data_count] = buffer;
-        data_count++;
-        buffer = "";
-      }
-
-      // 改行コードが来た場合
-      else if (c == '\n') {
-        Serial.println(buffer);
-        buffer = "";
-        read_data[data_count] = buffer;
-        data_count = 0;
-      }
-
-      else if (c != '\r') {
-        // CRは無視してそれ以外の文字はバッファに追加
-        buffer += c;
-      }
+// 戻り値: 1行読み込み成功したらtrue、ファイル末尾に達したらfalse
+bool readLog(void){
+  // ファイルが閉じていれば、新しく開く（最初の1回目や、全行読み終わった後の再スタート用）
+  if (!myfile) {
+    myfile = SD.open(DATA_FILE, FILE_READ);
+    if (!myfile) {
+      Serial.println("Cannot open " + DATA_FILE);
+      return false;
     }
-    // ファイルの終端に達したとき，バッファにデータが残っていれば出力
-    if (buffer.length() > 0){
-      Serial.println(buffer);
+    Serial.println("reading start...");
+    ROW_SIZE = 0;
+  }
+
+  String buffer = ""; 
+  int column_count = 0; 
+
+  // 1行分、またはファイルの終端まで読み進める
+  while (myfile.available() > 0){
+    char c = myfile.read(); 
+
+    // ','（カンマ）が来た場合
+    if (c == ','){
+      if (column_count < COLUMN_SIZE) {
+        read_data[column_count] = buffer;
+      }
+      column_count++;
+      buffer = "";
     }
+    // 改行コードが来た場合（ここで1行分が確定）
+    else if (c == '\n') {
+      if (column_count < COLUMN_SIZE) {
+        read_data[column_count] = buffer;
+      }
+      ROW_SIZE++;
+      return true; // 1行読めたので、一旦関数を抜けて送信処理へ
+    }
+    else if (c != '\r') {
+      buffer += c;
+    }
+  }
 
-    // ファイルを閉じる
-    myfile.close();
-    Serial.println("finish reading");
+  // ファイルの終端に達したとき、改行コードがなくバッファにデータが残っていれば最後の行として処理
+  if (buffer.length() > 0){
+    if (column_count < COLUMN_SIZE) {
+      read_data[column_count] = buffer;
+    }
+    ROW_SIZE++;
+    return true;
+  }
 
-  } else {
-    Serial.println("Cannot open " + DATA_FILE );
+  // ファイルの全行を読み切った場合
+  myfile.close(); // ファイルを完全に閉じる
+  Serial.print("finish reading. Total rows: ");
+  Serial.println(ROW_SIZE);
+  return false; 
+}
+
+// 1行まるごと","区切りでSerial1（各基板）へ送信する関数
+void transmitLog(void) {
+  String send_line = "";
+  
+  for (int i = 0; i < COLUMN_SIZE; i++) {
+    send_line += read_data[i];
+    if (i < COLUMN_SIZE - 1) {
+      send_line += ","; // 要素の間にカンマを挟む
+    }
+  }
+  
+  Serial1.println(send_line); // 各基板へ送信（末尾に改行を付与）
+}
+
+uint32_t last_time = 0;
+void timer_100Hz(void){
+  // 10ms以上経過したか判定
+  if (millis() - last_time >= 10){
+    last_time = millis(); //
+    
+    // 1行読み込みに成功したら、それを送信する
+    if (readLog()) {
+      transmitLog();
+    }
   }
 }
 
-
 void loop() {
-  // put your main code here, to run repeatedly:
-
+  timer_100Hz();
 }
