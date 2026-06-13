@@ -135,8 +135,9 @@ void loop() {
   read_sdp31(diff_Pressure, sdp_temperature);
   read_bmp(bmp_temperature, bmp_pressure);
 
-  Serial.print("airspeed: ");
   airspeed = sqrt(abs(2.0 * diff_Pressure * ((bmp_temperature + 273.15) / (bmp_pressure * 100.0)) * 287.026));
+
+  Serial.print("airspeed:"); 
   Serial.println(airspeed);
 
   delay(10);
